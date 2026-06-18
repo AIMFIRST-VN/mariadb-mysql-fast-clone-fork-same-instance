@@ -1,9 +1,18 @@
 # MariaDB & MySQL: Fast Clone / Fork — Same-Instance Pool for Parallel CI Tests
 
-> **TL;DR: 200 pristine MariaDB clones in 2 minutes 34 seconds. 82× faster than `mariadb-dump | mariadb`.**
-> Forks happen **inside a running mariadbd** — no `mariabackup`, no ZFS, no replication, no external tooling.
->
-> 📖 **Full writeup** (coming soon on the [AIMFIRST VN blog](https://aimfirstvn.com/)) — meanwhile see this README + [scripts/](scripts/) for the full story.
+## **1 GB database. 100 pristine clones. Same MariaDB instance. ~50 seconds.** (projected, ideal case)
+
+| What | Time |
+|---|---|
+| **Ideal case** (Threadripper Pro / Ryzen 7950X, 1 GB schema, 100 clones) | **~50s (projected)** |
+| **Measured** (Xeon E5-2640 v3 from 2014, 110 MB schema, 200 clones) | **2:34 (verified, CI green)** |
+| **Architectural floor** (unlimited shards, native processes, any pool size) | **~14s (theoretical)** |
+
+All three numbers use the **same architecture** — only hardware + shard count change. No `mariabackup`. No ZFS. No replication. No external tooling. Forks happen **inside a running mariadbd** via `IMPORT TABLESPACE` on a no-secondary-index source + btrfs subvolume snapshot + 16-shard parallel mariadbds.
+
+The 2:34 baseline is **82× faster** than `mariadb-dump | mariadb` on shared CI runners.
+
+> 📖 **Full writeup** (coming soon on the [AIMFIRST VN blog](https://aimfirstvn.com/)) — meanwhile see the [Scaling table](#scaling-pool-size--db-size--hardware) below + [scripts/](scripts/) for the full story.
 > 🏢 By [AIMFIRST VN](https://aimfirstvn.com/) — AI consultancy & infrastructure deep work.
 
 [![CI status](https://github.com/AIMFIRST-VN/mariadb-mysql-fast-clone-fork-same-instance/actions/workflows/ci.yml/badge.svg)](https://github.com/AIMFIRST-VN/mariadb-mysql-fast-clone-fork-same-instance/actions/workflows/ci.yml)
