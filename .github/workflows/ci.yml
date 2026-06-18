@@ -15,8 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install btrfs-progs
-        run: sudo apt-get install -y btrfs-progs
+      - name: Install btrfs-progs + mariadb-client
+        # mariadb-client is needed because the bench script talks to the
+        # containerized mariadbds from the host (not via docker exec).
+        run: sudo apt-get install -y btrfs-progs mariadb-client
 
       - name: Show runner resources
         run: |
