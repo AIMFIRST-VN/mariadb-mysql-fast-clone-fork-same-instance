@@ -182,7 +182,9 @@ vs production CI on HDD with shared-host contention (~3.5 hr baseline): **82×**
 
 ## Scaling: pool size × DB size × hardware
 
-Assumptions for this section: **ample RAM available** (no /dev/shm ceiling), **max S = 32 shards**.
+Assumptions for this section: **ample RAM available** (no /dev/shm ceiling). **`S` (shard count) scales freely with the pool — including 256+ shards** or distributed across multiple hosts when keeping wall time under 60s is the goal.
+
+The architectural rule of thumb: **per-clone wall ≈ single-clone bake time** when N=1 per shard. So `S = total_clones, N = 1` is the configuration that minimizes wall time. Trade-off is more mariadbds = more docker daemon startup serialization (mitigated by going to native processes or distributing across hosts).
 
 ### Measured baseline (lead number)
 
@@ -311,6 +313,60 @@ If you reproduce on different hardware, open a PR with your measured numbers.
 - **One docker container per shard** (not `mysqld_multi`). Multi-instance shares the docker container lifecycle — a crash kills all shards. Multi-docker is the standard pattern; isolation outweighs the ~10s startup overhead.
 - **`W=8` per shard**. Beyond 8 you hit dict_sys.latch contention. W=16 = no improvement, W=24 timed out.
 - **`S=16` shards**. Beyond 16, docker daemon serialization eats the gains from the smaller per-shard bake. START_PARALLEL=16 measured slower than =8 (35s vs 28s for the same 16 containers).
+
+## Storage compression — when to enable, when to skip
+
+Two orthogonal compression layers can apply:
+
+### 1. btrfs `compress=zstd:N` on the loopback datadir
+
+Enables transparent block-level compression on the btrfs subvolume backing the mariadbd datadirs. Trade-off: CPU for RAM/storage savings.
+
+```bash
+# Enable compression at mount time (instead of the bench default `nodatacow`)
+sudo mount -o loop,compress=zstd:9 /dev/shm/bench-btrfs.img /tmp/bench-btrfs
+```
+
+zstd levels: 1 (fast, ~30% compression) to 22 (slow, ~50%). **`zstd:9` is the sweet spot** for our workload (modest CPU cost, 35-45% compression on text-heavy schemas).
+
+Important: our bench script uses `mount -o loop,nodatacow` by default because `nodatacow` is faster for writes and we're not RAM-constrained on a 125 GB box. **Flip to `compress=zstd:9` when:**
+- `/dev/shm` is tight (small-RAM hosts)
+- Schema is text-heavy (VARCHAR/TEXT/JSON columns compress well; pure-numeric/binary schemas don't)
+- You're persisting the btrfs image to disk (`/hdd4`) for long-term reuse — compression cuts disk usage
+
+Expected impact: at S=16 N=13 with 1 GB schema, raw datadir = ~13 GB on shard 0; with `zstd:9` ≈ **~7-9 GB**. Bake wall increases ~10-15% from CPU compression overhead.
+
+### 2. InnoDB `ROW_FORMAT=COMPRESSED` (per-table)
+
+Native InnoDB page compression — compresses pages BEFORE they hit storage. Independent of btrfs.
+
+```sql
+ALTER TABLE huge_table ROW_FORMAT=COMPRESSED KEY_BLOCK_SIZE=8;
+```
+
+Typical compression: **30-50% smaller .ibd files** for text-heavy schemas. Pages stay compressed in the buffer pool AND in `IMPORT TABLESPACE` — the smaller .ibd files cp/snapshot faster too.
+
+**Critical:** if your source schema uses `ROW_FORMAT=COMPRESSED`, the bench's `IMPORT TABLESPACE` flow handles it transparently — the .cfg metadata includes compression info. No script changes needed.
+
+When to enable: schemas where text/JSON columns dominate. When NOT to enable: schemas dominated by indexed integer columns (compression overhead exceeds gains; benchmark first).
+
+### 3. Stack both for maximum compression
+
+btrfs `compress=zstd:9` + InnoDB `ROW_FORMAT=COMPRESSED` are **multiplicative**:
+- btrfs alone: ~40% reduction
+- InnoDB alone: ~40% reduction
+- Both: ~65-70% reduction (NOT 80%; the InnoDB-compressed .ibd is already entropy-dense, so btrfs adds less on top)
+
+For 10 GB schemas this matters: raw ~130 GB per shard datadir → with both compressions, ~40 GB. Now fits comfortably in /dev/shm-backed btrfs even with modest RAM headroom.
+
+### Compression × performance trade-off summary
+
+| Config | Storage | Bake wall | Use when |
+|---|---|---|---|
+| `nodatacow` (bench default) | 1.0× (baseline) | fastest | Ample RAM, < 1 GB schemas |
+| btrfs `compress=zstd:9` | 0.55-0.65× | +10-15% | RAM tight OR persisting btrfs image to disk |
+| InnoDB `ROW_FORMAT=COMPRESSED` (source) | 0.5-0.6× | -5% (smaller cp) to +5% | Text-heavy schemas, large pool |
+| Both stacked | 0.30-0.40× | +5-10% net | 10 GB+ schemas; large pool counts |
 
 ## Memory + storage requirements
 
