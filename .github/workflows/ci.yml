@@ -1,0 +1,125 @@
+name: bench-smoke
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: 4-shard btrfs-on-shm smoke test
+    # github-hosted runners only — NOT our self-hosted
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install btrfs-progs
+        run: sudo apt-get install -y btrfs-progs
+
+      - name: Show runner resources
+        run: |
+          echo '--- CPUs ---'
+          nproc
+          echo '--- RAM ---'
+          free -h | head -3
+          echo '--- /dev/shm ---'
+          df -h /dev/shm
+          echo '--- docker ---'
+          docker version --format '{{.Server.Version}}'
+
+      - name: Resize /dev/shm to 10 GB
+        # github-hosted ubuntu-latest defaults /dev/shm to ~5 GB; we need more
+        # for our btrfs loopback (4 GB allocation here for smoke test).
+        run: |
+          sudo mount -o remount,size=10G /dev/shm
+          df -h /dev/shm
+
+      - name: Pull mariadb image (cache hit if cached)
+        run: docker pull mariadb:10.6.22
+
+      - name: Start source mariadb + load tiny synthetic schema
+        # Spin a source mariadbd, populate with a small synthetic schema that
+        # exercises the same code paths (multiple tables, secondary indexes).
+        run: |
+          docker run -d --name source-mariadb-A \
+            -e MYSQL_ROOT_PASSWORD=root \
+            -p 127.0.0.1:33800:3306 \
+            mariadb:10.6.22 \
+            --innodb-buffer-pool-size=256M \
+            --innodb-doublewrite=0 \
+            --skip-log-bin
+
+          # Wait for ready
+          for i in $(seq 1 60); do
+            docker exec source-mariadb-A mariadb -uroot -proot -e 'SELECT 1' >/dev/null 2>&1 && break
+            sleep 0.5
+          done
+          echo "source mariadb ready"
+
+          # Populate: 10 tables × 100 rows each, 2 secondary indexes per table
+          docker exec source-mariadb-A mariadb -uroot -proot -e 'CREATE DATABASE smoke_db'
+          for t in $(seq 0 9); do
+            docker exec source-mariadb-A mariadb -uroot -proot smoke_db -e "
+              CREATE TABLE t$t (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                a INT, b INT, c VARCHAR(64), d VARCHAR(64),
+                KEY ka(a), KEY kb(b)
+              ) ENGINE=InnoDB;
+            "
+            for batch in $(seq 0 9); do
+              VALS=""
+              for i in $(seq 1 10); do
+                idx=$((batch * 10 + i))
+                if [ -n "$VALS" ]; then VALS="$VALS,"; fi
+                VALS="$VALS($idx,$idx,$((idx*7)),'a$idx','b$idx')"
+              done
+              docker exec source-mariadb-A mariadb -uroot -proot smoke_db -e \
+                "INSERT INTO t$t (id,a,b,c,d) VALUES $VALS;"
+            done
+          done
+          echo "source schema loaded: 10 tables × 100 rows"
+
+      - name: Run the bench at smoke scale (S=2 N=3)
+        # Reduced from production scale to fit 4 vCPU / 16 GB / 10 GB shm runner.
+        # Production scale is SHARDS=16 N=13 = 208 pool slots; smoke = 2×3 = 6 slots.
+        env:
+          SHARDS: '2'
+          N: '3'
+          W: '4'
+          START_PARALLEL: '2'
+          BTRFS_SIZE_GB: '4'
+          SOURCE_CONTAINER: source-mariadb-A
+          SOURCE_DB: smoke_db
+          SUDO_PW: ''  # github-hosted ubuntu runner has NOPASSWD sudo
+        run: |
+          # github-hosted runner uses NOPASSWD sudo — patch the script to skip
+          # password piping, or set SUDO_PW='' and rely on sudoers config.
+          # For now: sudo without password works directly.
+          python3 -u scripts/test_btrfs_on_shm.py
+
+      - name: Verify all shards have the expected clones
+        run: |
+          for port in 33880 33881; do
+            actual=$(mariadb -h127.0.0.1 -P$port -uroot -proot -BN -e \
+              "SELECT COUNT(*) FROM information_schema.SCHEMATA WHERE SCHEMA_NAME LIKE 'dl_clone_%'")
+            if [ "$actual" != "3" ]; then
+              echo "Shard on $port: expected 3 pool DBs, got $actual"
+              exit 1
+            fi
+            rows=$(mariadb -h127.0.0.1 -P$port -uroot -proot -BN -e \
+              "SELECT COUNT(*) FROM dl_clone_1.t0")
+            if [ "$rows" != "100" ]; then
+              echo "Shard on $port dl_clone_1.t0: expected 100 rows, got $rows"
+              exit 1
+            fi
+            echo "Shard on $port: 3 pool DBs, dl_clone_1.t0 = 100 rows ✓"
+          done
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker ps --format '{{.Names}}' | grep -E '^(bench-mariadb-|source-mariadb-)' | xargs -r docker rm -f || true
+          sudo umount /tmp/bench-btrfs 2>/dev/null || true
+          sudo rm -f /dev/shm/bench-btrfs.img 2>/dev/null || true

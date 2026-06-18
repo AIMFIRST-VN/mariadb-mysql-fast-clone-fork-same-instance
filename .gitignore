@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.DS_Store
+.env
+.envrc
+.idea/
+.vscode/
+*.swp
+*.swo
+.sudopw
+/dev/shm/bench-*
+/tmp/bench-*
+bench-output*.log
