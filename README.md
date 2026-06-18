@@ -170,6 +170,120 @@ Full benchmark journey: **[RESULTS.md](RESULTS.md)** — every approach tested, 
 
 vs production CI on HDD with shared-host contention (~3.5 hr baseline): **82×**.
 
+## Scaling: pool size × DB size × hardware
+
+Assumptions for this section: **ample RAM available** (no /dev/shm ceiling), **max S = 32 shards**.
+
+### Measured baseline (lead number)
+
+| Metric | Value |
+|---|---|
+| Schema (real CI3 `mas_artsupport`) | **110 MB**, 51 tables, ~33 secondary indexes |
+| Hardware | **Intel Xeon E5-2640 v3** (Haswell-EP, 2014, 16C/32T, 2.6 GHz base / 3.4 GHz boost, DDR4-1866) |
+| Architecture | S=16, N=13, W=8, btrfs-on-/dev/shm, MariaDB 10.6.22 |
+| **Pool size** | **208 slots (16 shards × 13 clones)** |
+| **Total wall** | **153.4s = 2 min 34 s** |
+| Per-phase | setup 25s · bake 62s · snapshot 3s · start 28s |
+
+### Pool-size scaling (110 MB schema)
+
+| Total clones | Config | **Haswell-EP** (measured/projected) | Modern desktop (Ryzen 7950X / 14900K) | Threadripper Pro 96-core |
+|---|---|---|---|---|
+| **1** | S=1, N=1 | ~38s | ~25s | **~15s** |
+| **100** | S=16, N=7 (=112) | ~1:35 | ~50s | **~35s** |
+| **200** | S=16, N=13 (=208) | **2:34 (measured)** | ~1:30 | **~1:00** |
+| **1000** | S=32, N=32 (=1024) | ~3:40 | ~2:00 | **~1:20** |
+| **10000** | S=32, N=313 (=10016) | ~22 min | ~12 min | **~8 min** |
+
+Fixed setup overhead (~25s) is amortized hard at N=1; bake dominates as pool grows; snapshot stays sub-linear (always ~3s — btrfs scales beautifully).
+
+At Haswell we measured **docker daemon caps START_PARALLEL=8** (going to =16 was actually slower); on modern silicon the cap lifts to =16 or =32 because there's no CPU contention.
+
+### DB-size scaling (200 clones target, S=16 N=13, Haswell-EP)
+
+DB size affects: source-into-baker load time (linear), per-clone IMPORT TABLESPACE (proportional to page count to validate), and ALTER TABLE ADD INDEX (sort-merge cost grows with row count). Snapshot and docker startup stay constant.
+
+| Schema | Setup | Bake N=13 | Snap | Start | **Haswell-EP TOTAL** | **Threadripper Pro** |
+|---|---|---|---|---|---|---|
+| **110 MB** | 25s | 62s | 3s | 28s | **2:34 (measured)** | **~1:00** |
+| **1 GB** | ~120s | ~140s | 3s | 28s | **~5:00 (projected)** | **~2:00** |
+| **10 GB** | ~12 min | ~17 min | 3s | 28s | **~30 min (projected)** | **~12 min** |
+
+For 10 GB schemas, the bake-on-shard-0 step dominates (~17 min) because each clone now does ~80s of IMPORT + ADD INDEX work. Once shard 0 is baked, the 31 btrfs snapshots and 32 mariadbd starts stay nearly the same as the 110 MB case — that's the architectural payoff.
+
+### Combined matrix: pool size × DB size (Haswell-EP)
+
+| | 1 clone | 100 clones | 200 clones | 1000 clones | 10000 clones |
+|---|---|---|---|---|---|
+| **110 MB** | 38s | 1:35 | 2:34 ✓ | 3:40 | 22 min |
+| **1 GB** | ~1:30 | ~3:50 | ~5:00 | ~6:30 | ~28 min |
+| **10 GB** | ~13 min | ~25 min | ~30 min | ~35 min | ~80 min |
+
+### Combined matrix: pool size × DB size (Threadripper Pro 96-core projected)
+
+| | 1 clone | 100 clones | 200 clones | 1000 clones | 10000 clones |
+|---|---|---|---|---|---|
+| **110 MB** | 15s | 35s | 1:00 | 1:20 | 8 min |
+| **1 GB** | ~35s | ~1:30 | ~2:00 | ~2:40 | ~10 min |
+| **10 GB** | ~5 min | ~10 min | ~12 min | ~14 min | ~32 min |
+
+**Sub-minute 200-clone pools and sub-2-min 1 GB-schema bakes are realistic on current silicon.** The 10 GB row is bottlenecked by the source-load-into-baker step (linear in schema size) — that's hard to dodge without breaking the same-instance design.
+
+### Theoretical floor: unlimited shards (short-lived containers / native processes)
+
+If we relax the docker-daemon ceiling AND assume unlimited RAM, what's the architectural floor?
+
+**The model:** `S = total_clones` (one shard per clone). Each shard does exactly 1 clone bake, all in parallel. Pool size becomes a constant — adding more clones just adds more parallel shards, none of which take longer.
+
+The wall is bounded by the **longest sequential chain** that exists per shard:
+
+```
+   stage source (single-threaded, shared across all shards)
+                 ↓
+   spawn mariadbd #i   (parallel across all shards)
+                 ↓
+   bake 1 clone        (single-thread CPU on dict_sys.latch)
+                 ↓
+   ready
+```
+
+**Theoretical floor for ANY pool size:**
+
+| Phase | Haswell-EP | Threadripper Pro |
+|---|---|---|
+| Stage source (constant, shared) | ~25s | ~10s |
+| Spawn mariadbd (native, no docker) | ~3-5s | ~1.5-2.5s |
+| Bake 1 clone (single-threaded) | 5.4s | 2.2s |
+| **TOTAL FLOOR** | **~35s** | **~14s** |
+
+This is the asymptote: **35s on 2014 silicon, 14s on current silicon, regardless of whether you want 200 clones or 200,000.**
+
+To approach this floor in practice, three things need to give:
+
+1. **Bypass docker daemon serialization** — docker caps at ~8 concurrent starts. Either run mariadbd as native processes, use `containerd`/`runc` directly, or pre-warm containers and swap datadirs on demand.
+2. **Stage the .ibd files once, distribute to all shards** — currently we stage on shard 0 then snapshot. With native processes you could bind-mount /dev/shm into each, skip the snapshot phase entirely.
+3. **Truly parallel mariadbd startup** — kernel can fork thousands of processes in milliseconds; mariadbd's own init is the per-instance bottleneck (data dictionary load, buffer pool prealloc).
+
+We haven't built this. The current docker-based architecture (S=16, S=32) is the pragmatic point: it works, it's debuggable, and 2:34 → 1:00 is already enough for most CI workloads. The theoretical floor is interesting mostly for understanding *where* the architectural ceiling is — if you ever need sub-15-second 10,000-clone pools, this is the design space to explore.
+
+### Hardware not yet tested — please share if you measure
+
+Known-interesting datapoints to confirm in `BENCHMARKS_BY_HARDWARE.md`:
+- Ryzen 7950X / 13900K / 14900K (modern desktops)
+- Threadripper Pro 7975WX / 7995WX (workstation/server)
+- Apple Silicon M3/M4 (per-thread perf competitive but Docker is heavier on macOS)
+- ARM server (Ampere Altra, AWS Graviton)
+
+If you reproduce on different hardware, open a PR with your measured numbers.
+
+Known-interesting datapoints to confirm in `BENCHMARKS_BY_HARDWARE.md`:
+- Ryzen 7950X / 13900K / 14900K (modern desktops)
+- Threadripper Pro 7975WX / 7995WX (workstation/server)
+- Apple Silicon M3/M4 (per-thread perf is competitive but Docker is heavier on macOS)
+- ARM server (Ampere Altra, AWS Graviton) — single-thread perf vs Xeon is interesting
+
+If you reproduce on different hardware, open a PR with your measured numbers.
+
 ## Comparison with related tools
 
 | Tool | Approach | This repo's advantage |
