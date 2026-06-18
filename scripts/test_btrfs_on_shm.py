@@ -44,9 +44,16 @@ def run(cmd, **kw):
 
 
 def sudo(cmd_str, timeout=300):
+    """Run cmd_str as root. If SUDO_PW is set, pipe it via stdin; otherwise
+    rely on NOPASSWD sudoers config (e.g. on github-hosted runners)."""
+    if SUDO_PW:
+        return subprocess.run(
+            ["sudo", "-S", "bash", "-c", cmd_str],
+            input=SUDO_PW + "\n", capture_output=True, text=True, timeout=timeout,
+        )
     return subprocess.run(
-        ["sudo", "-S", "bash", "-c", cmd_str],
-        input=SUDO_PW + "\n", capture_output=True, text=True, timeout=timeout,
+        ["sudo", "-n", "bash", "-c", cmd_str],
+        capture_output=True, text=True, timeout=timeout,
     )
 
 
@@ -217,8 +224,13 @@ def clone_one_shard0(i):
 
 def main():
     global TABLES, INDEXES_PER_TABLE
+    # Verify sudo works (either with SUDO_PW or NOPASSWD).
     if not SUDO_PW:
-        print("SUDO_PW env var not set"); sys.exit(1)
+        check = subprocess.run(["sudo", "-n", "true"], capture_output=True, text=True)
+        if check.returncode != 0:
+            print("SUDO_PW env var not set and passwordless sudo unavailable. "
+                  "Either export SUDO_PW or configure NOPASSWD for the sudo user.")
+            sys.exit(1)
 
     t_total_start = time.time()
     print(f"=== Setup (SHARDS={SHARDS}, N/shard={N_PER_SHARD}, W={W}) ===")
