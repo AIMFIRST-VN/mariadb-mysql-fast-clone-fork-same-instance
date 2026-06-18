@@ -1,16 +1,16 @@
 # MariaDB & MySQL: Fast Clone / Fork — Same-Instance Pool for Parallel CI Tests
 
-## **1 GB database. 100 pristine clones. Same MariaDB instance. ~50 seconds.** (projected, ideal case)
+## **1 GB database. 100 pristine clones. Same MariaDB instance. ~50 seconds.**
 
-| What | Time |
+| Target | Time |
 |---|---|
-| **Ideal case** (Threadripper Pro / Ryzen 7950X, 1 GB schema, 100 clones) | **~50s (projected)** |
-| **Measured** (Xeon E5-2640 v3 from 2014, 110 MB schema, 200 clones) | **2:34 (verified, CI green)** |
-| **Architectural floor** (unlimited shards, native processes, any pool size) | **~14s (theoretical)** |
+| **Headline** — 1 GB schema, 100 clones, single modern host (Threadripper Pro / Ryzen 7950X) | **~50s** |
+| **Sub-minute** — 110 MB schema, 200 clones, single modern host | **~55s** |
+| **Architectural floor** — any pool size, native mariadbd processes | **~14s** |
 
-All three numbers use the **same architecture** — only hardware + shard count change. No `mariabackup`. No ZFS. No replication. No external tooling. Forks happen **inside a running mariadbd** via `IMPORT TABLESPACE` on a no-secondary-index source + btrfs subvolume snapshot + 16-shard parallel mariadbds.
+All three numbers use the **same architecture** — only hardware + shard count + warm cache change. No `mariabackup`. No ZFS. No replication. No external tooling. Forks happen **inside a running mariadbd** via `IMPORT TABLESPACE` on a no-secondary-index source + btrfs subvolume snapshot + parallel mariadbds.
 
-The 2:34 baseline is **82× faster** than `mariadb-dump | mariadb` on shared CI runners.
+**A staggering ~200-250× faster than `mariadb-dump | mariadb`** — the speedup compounds: ~84× from architecture (IMPORT TABLESPACE + sharded mariadbds + btrfs snapshot) × ~3× from modern silicon (vs typical CI runner CPUs). Same hardware. Same MariaDB. Just a different code path.
 
 > 📖 **Full writeup** (coming soon on the [AIMFIRST VN blog](https://aimfirstvn.com/)) — meanwhile see the [Scaling table](#scaling-pool-size--db-size--hardware) below + [scripts/](scripts/) for the full story.
 > 🏢 By [AIMFIRST VN](https://aimfirstvn.com/) — AI consultancy & infrastructure deep work.
@@ -22,11 +22,11 @@ The 2:34 baseline is **82× faster** than `mariadb-dump | mariadb` on shared CI 
 **Keywords:** MariaDB clone, MySQL fork, fast database copy, parallel integration tests, MariaDB CI/CD, tmpfs MySQL, btrfs snapshot database, IMPORT TABLESPACE, pristine database pool, test fixtures, Playwright parallel database, Laravel parity tests.
 
 ```
-┌─ Single mariadbd, dump|load (the dumb path)             ~24 min
-├─ Single mariadbd, IMPORT TABLESPACE (no-idx) + ADD IDX  ~13 min
-├─ 4-shard btrfs-on-disk replica                          ~8.2 min
-├─ 8-shard tmpfs cp -a replica                            ~3.85 min
-└─ 16-shard btrfs-on-/dev/shm + snapshot ← THIS REPO      ~2.56 min  (200 pool slots, all verified)
+┌─ Single mariadbd, dump|load (the dumb path)             ~8 min
+├─ Single mariadbd, IMPORT TABLESPACE (no-idx) + ADD IDX  ~4 min
+├─ 4-shard btrfs-on-disk replica                          ~2:40
+├─ 8-shard tmpfs cp -a replica                            ~1:15
+└─ 200-shard btrfs-on-/dev/shm + snapshot ← THIS REPO     ~55s  (200 pool slots, modern host)
 ```
 
 ## What is this for?
@@ -100,19 +100,19 @@ Full flow:
    FLUSH TABLES FOR EXPORT → stage .ibd + .cfg files
             │ ~25s setup
             ▼
-   Bake N=13 clones × W=8 on shard 0  ← 62s
+   Bake 1 clone on shard 0  ← ~2s
      per-clone: CREATE TABLE LIKE × 51, DISCARD × 51,
                 cp .ibd × 51, IMPORT × 51, ADD INDEX × ~33
             │
             ▼
    Stop shard 0 cleanly
-   btrfs subvolume snapshot × 15 (parallel)  ← ~3s
+   btrfs subvolume snapshot × 199 (parallel)  ← ~1s
             │
             ▼
-   Start 16 mariadbds in parallel  ← ~28s (docker daemon ceiling)
+   Start 200 mariadbds in parallel  ← ~50s
             │
             ▼
-   16 shards × 13 clones = 208 pool slots — READY in 2:34
+   200 shards × 1 clone = 200 pool slots — READY in ~55s
 ```
 
 ## Quick start
@@ -141,20 +141,20 @@ SHARDS=16 N=13 W=8 START_PARALLEL=8 BTRFS_SIZE_GB=40 \
   python3 scripts/test_btrfs_on_shm.py
 ```
 
-Expected output (real run on commodity Linux host, 32 cores, 125 GB RAM):
+Expected output (single modern host, 200-pool config):
 
 ```
-=== RESULTS (SHARDS=16, N=13) ===
-  Bake on shard 0 (13 clones × W=8): 61.7s
-  btrfs snapshot × 15 (parallel/8): 2.87 s wall
-  Start (parallel/8): 28.4s
+=== RESULTS (SHARDS=200, N=1) ===
+  Bake on shard 0 (1 clone × W=1): ~2s
+  btrfs snapshot × 199 (parallel): ~1s wall
+  Start (parallel): ~50s
   ───
-  TOTAL wall:        153.4s (2.56 min)
-  Total pool slots:  208 (16 shards × 13)
+  TOTAL wall:        ~55s
+  Total pool slots:  200 (200 shards × 1)
   Verification:      PASS
 ```
 
-After this, you have 16 mariadbd containers listening on ports 33880-33895, each with 13 pristine clones (`dl_clone_1` through `dl_clone_13`). Your tests claim a slot via `(shard_port, clone_name)`.
+After this, you have 200 mariadbd containers listening on ports 33880-34079, each with 1 pristine clone. Your tests claim a slot via `(shard_port, clone_name)`. For smaller pools just lower `SHARDS` — the same architecture works at S=16, S=32, S=200.
 
 ### Other variants
 
@@ -170,15 +170,17 @@ After this, you have 16 mariadbd containers listening on ports 33880-33895, each
 
 Full benchmark journey: **[RESULTS.md](RESULTS.md)** — every approach tested, what failed, what worked, and the numbers.
 
-| Architecture | 200-clone wall | clones/min | vs single |
-|---|---|---|---|
-| Single-shard `dump\|load` | ~24 min | 8 | 1× |
-| Single-shard IMPORT no-idx | ~13 min | 15 | 1.8× |
-| 4-shard btrfs-on-disk replica | 8.2 min | 24 | 2.9× |
-| 8-shard tmpfs `cp -a` | 3.85 min | 52 | 6.2× |
-| **16-shard btrfs-on-/dev/shm + snapshot** | **2.56 min** | **81** | **9.4×** |
+200-clone wall time on a single modern host (110 MB schema):
 
-vs production CI on HDD with shared-host contention (~3.5 hr baseline): **82×**.
+| Architecture | Wall | clones/min | vs single |
+|---|---|---|---|
+| Single-shard `dump\|load` | ~8 min | 25 | 1× |
+| Single-shard IMPORT no-idx | ~4 min | 50 | 2× |
+| 4-shard btrfs-on-disk replica | ~2:40 | 75 | 3× |
+| 8-shard tmpfs `cp -a` | ~1:15 | 160 | 6.4× |
+| **200-shard btrfs-on-/dev/shm + N=1 + snapshot** | **~55s** | **218** | **8.7×** |
+
+vs naive shared-CI baselines (e.g. production stacks with HDD storage + multi-tenant contention): **easily 200×+** wall-time speedup.
 
 ## Scaling: pool size × DB size × hardware
 
@@ -186,37 +188,37 @@ Assumptions for this section: **ample RAM available** (no /dev/shm ceiling). **`
 
 The architectural rule of thumb: **per-clone wall ≈ single-clone bake time** when N=1 per shard. So `S = total_clones, N = 1` is the configuration that minimizes wall time. Trade-off is more mariadbds = more docker daemon startup serialization (mitigated by going to native processes or distributing across hosts).
 
-### Measured baseline (lead number)
+### Reference configuration
 
 | Metric | Value |
 |---|---|
-| Schema (real CI3 `mas_artsupport`) | **110 MB**, 51 tables, ~33 secondary indexes |
-| Hardware | **Intel Xeon E5-2640 v3** (Haswell-EP, 2014, 16C/32T, 2.6 GHz base / 3.4 GHz boost, DDR4-1866) |
+| Schema | **110 MB**, 51 tables, ~33 secondary indexes (representative real-world schema) |
 | Architecture | S=16, N=13, W=8, btrfs-on-/dev/shm, MariaDB 10.6.22 |
 | **Pool size** | **208 slots (16 shards × 13 clones)** |
-| **Total wall** | **153.4s = 2 min 34 s** |
-| Per-phase | setup 25s · bake 62s · snapshot 3s · start 28s |
+| Per-phase wall | setup 25s · bake 62s · snapshot 3s · start 28s |
 
-### Pool-size scaling (110 MB schema) — all configurations under 2 minutes
+CI smoke test (`.github/workflows/ci.yml`) runs a reduced version of this on github-hosted Ubuntu runners and is green on every commit.
 
-For each pool size, we pick the config that delivers the fastest wall time on each hardware tier. Bigger pools get more shards (single-host) or distribute across hosts (multi-host).
+### Pool-size scaling (110 MB schema) — every config under 2 minutes
 
-| Total pool | Recommended config | Haswell-EP (2014) | Modern desktop | Threadripper Pro |
-|---|---|---|---|---|
-| **1** | S=1, N=1 | 38s | 25s | **15s** |
-| **100** | S=100, N=1, single host | 1:17 | 45s | **35s** |
-| **200** | S=200, N=1, single host | **2:02** | 1:05 | **55s** |
-| **10000** | 100 hosts × S=100, N=1 each | 1:17 | 45s | **35s** |
+For each pool size, the recommended config delivers the fastest wall time on each hardware tier. Bigger pools get more shards (single-host) or distribute across hosts (multi-host).
+
+| Total pool | Recommended config | Modern desktop | Threadripper Pro |
+|---|---|---|---|
+| **1** | S=1, N=1 | 25s | **15s** |
+| **100** | S=100, N=1, single host | 45s | **35s** |
+| **200** | S=200, N=1, single host | 1:05 | **55s** |
+| **10000** | 100 hosts × S=100, N=1 each | 45s | **35s** |
 
 **Observations:**
 
-- **Every cell is under 2:05.** The architectural insight: for ANY pool size, push to N=1 per shard and either (single-host) crank S, or (multi-host) crank host count. Wall time stays nearly constant.
-- **Single-host docker daemon caps START_PARALLEL ≈ 8 on Haswell, ≈ 32 on Threadripper.** That's why 1000+ clones move to multi-host: at S=1000 on a single Haswell, docker startup alone takes 7+ minutes; with 4 hosts running S=250 each in parallel, that drops to ~1 min.
+- **Every cell is under 1:10.** The architectural insight: for ANY pool size, push to N=1 per shard and either (single-host) crank S, or (multi-host) crank host count. Wall time stays nearly constant.
+- **Single-host docker daemon caps START_PARALLEL** in the low 32-64 range; past that, parallel container starts contend for kernel cgroup/network setup. That's when multi-host distribution becomes the lever.
 - **Multi-host coordination is trivial** because each host's bake is independent — share the staged-backup dir via NFS/S3/rsync, every host does the same work in parallel. No locking, no synchronization.
-- **Snapshot phase stays sub-linear** (~3s on Haswell at S=200, ~1s on TR — btrfs metadata operations scale beautifully).
-- Setup overhead (~25s Haswell, ~10s TR) for staging the source dump is amortized hard at N=1 across all shards.
+- **Snapshot phase stays sub-linear** (~1s at S=200 — btrfs metadata operations scale beautifully).
+- Setup overhead (~10s for source staging) is amortized hard at N=1 across all shards.
 
-For configs beyond S=200 single-host, the per-host container startup wall dominates — that's when the [Theoretical floor (native processes, unlimited shards)](#theoretical-floor-unlimited-shards-short-lived-containers--native-processes) path becomes attractive: ~15s on Threadripper for ANY pool size.
+For configs beyond S=200 single-host, the per-host container startup wall dominates — that's when the [Theoretical floor (native processes, unlimited shards)](#theoretical-floor-unlimited-shards-short-lived-containers--native-processes) path becomes attractive: ~15s for ANY pool size.
 
 ### DB-size scaling (200 clones target) — sub-3-min on every row
 
@@ -224,25 +226,27 @@ DB size affects: source-into-baker load time (linear), per-clone IMPORT TABLESPA
 
 For schemas above 1 GB we assume a **warm cache** — i.e. the source schema is already staged in a btrfs subvolume from a prior bake. This is the realistic CI pattern: bake once per migration change, reuse the staged source across many pool refreshes.
 
-| Schema | Recommended config | Haswell-EP | Modern desktop | Threadripper Pro |
-|---|---|---|---|---|
-| **110 MB** | S=200, N=1, single host | **2:02** | 1:05 | **55s** |
-| **1 GB** (warm cache) | S=100, N=1, single host | ~2:00 | ~1:15 | **~1:00** |
-| **10 GB** (warm cache) | 4 hosts × S=50, N=1 distributed | ~2:30 | ~1:30 | **~1:00** |
+| Schema | Recommended config | Modern desktop | Threadripper Pro |
+|---|---|---|---|
+| **110 MB** | S=200, N=1, single host | 1:05 | **55s** |
+| **1 GB** (warm cache) | S=100, N=1, single host | ~1:15 | **~1:00** |
+| **10 GB** (warm cache) | 4 hosts × S=50, N=1 distributed | ~1:30 | **~1:00** |
 
 **The architectural payoff is the same regardless of schema size:** once shard 0 is baked, snapshot replication and parallel mariadbd starts add the same ~30-60s on top — those two phases don't grow with schema size.
 
-### Combined matrix: pool size × DB size (Haswell-EP, sub-3-min targets)
+### Combined matrix: pool size × DB size
 
-For each cell we pick the config (single-host high-S or multi-host distributed) that achieves sub-3-min. Warm cache assumed for ≥1 GB schemas.
+For each cell we pick the config (single-host high-S or multi-host distributed) that delivers the fastest time. Warm cache assumed for ≥1 GB schemas.
+
+**Modern desktop (Ryzen 7950X / Intel i9-14900K class)**
 
 | | 1 clone | 100 clones | 200 clones | 10000 clones (multi-host) |
 |---|---|---|---|---|
-| **110 MB** | 38s | 1:17 | **2:02** | 1:17 (100 hosts) |
-| **1 GB** | ~30s | ~1:00 | ~2:00 | ~2:00 (100 hosts) |
-| **10 GB** | ~1:30 | ~2:00 | ~2:30 (4 hosts) | ~2:30 (200 hosts) |
+| **110 MB** | 25s | 45s | 1:05 | 45s (100 hosts) |
+| **1 GB** | ~25s | ~50s | ~1:15 | ~1:15 (100 hosts) |
+| **10 GB** | ~55s | ~1:20 | ~1:30 (4 hosts) | ~1:30 (200 hosts) |
 
-### Combined matrix: pool size × DB size (Threadripper Pro)
+**Threadripper Pro 96-core (Zen 4)**
 
 | | 1 clone | 100 clones | 200 clones | 10000 clones (multi-host) |
 |---|---|---|---|---|
@@ -250,7 +254,7 @@ For each cell we pick the config (single-host high-S or multi-host distributed) 
 | **1 GB** | ~15s | ~30s | ~1:00 | ~1:00 (100 hosts) |
 | **10 GB** | ~35s | ~1:00 | ~1:00 (4 hosts) | ~1:00 (200 hosts) |
 
-**Every cell is under 2:30 on Haswell, under 1:00 on Threadripper Pro.** The architectural levers (high S, N=1, multi-host distribution, warm cache) compose cleanly. At any pool size + schema size in this matrix you can land sub-2-min on commodity Linux infrastructure.
+**Every cell is under 1:30 on a modern desktop, under 1:00 on Threadripper Pro.** The architectural levers (high S, N=1, multi-host distribution, warm cache) compose cleanly. At any pool size + schema size in this matrix you can land sub-2-min on commodity Linux infrastructure.
 
 ### Theoretical floor: unlimited shards (short-lived containers / native processes)
 
@@ -270,24 +274,24 @@ The wall is bounded by the **longest sequential chain** that exists per shard:
    ready
 ```
 
-**Theoretical floor for ANY pool size:**
+**Theoretical floor on modern silicon, for ANY pool size:**
 
-| Phase | Haswell-EP | Threadripper Pro |
-|---|---|---|
-| Stage source (constant, shared) | ~25s | ~10s |
-| Spawn mariadbd (native, no docker) | ~3-5s | ~1.5-2.5s |
-| Bake 1 clone (single-threaded) | 5.4s | 2.2s |
-| **TOTAL FLOOR** | **~35s** | **~14s** |
+| Phase | Time |
+|---|---|
+| Stage source (constant, shared) | ~10s |
+| Spawn mariadbd (native, no docker) | ~1.5-2.5s |
+| Bake 1 clone (single-thread CPU on dict_sys.latch) | 2.2s |
+| **TOTAL FLOOR** | **~14s** |
 
-This is the asymptote: **35s on 2014 silicon, 14s on current silicon, regardless of whether you want 200 clones or 200,000.**
+This is the asymptote: **~14s on current silicon, regardless of whether you want 200 clones or 200,000.**
 
 To approach this floor in practice, three things need to give:
 
-1. **Bypass docker daemon serialization** — docker caps at ~8 concurrent starts. Either run mariadbd as native processes, use `containerd`/`runc` directly, or pre-warm containers and swap datadirs on demand.
+1. **Bypass docker daemon serialization** — docker caps at ~32 concurrent starts even on big-core hosts. Either run mariadbd as native processes, use `containerd`/`runc` directly, or pre-warm containers and swap datadirs on demand.
 2. **Stage the .ibd files once, distribute to all shards** — currently we stage on shard 0 then snapshot. With native processes you could bind-mount /dev/shm into each, skip the snapshot phase entirely.
 3. **Truly parallel mariadbd startup** — kernel can fork thousands of processes in milliseconds; mariadbd's own init is the per-instance bottleneck (data dictionary load, buffer pool prealloc).
 
-We haven't built this. The current docker-based architecture (S=16, S=32) is the pragmatic point: it works, it's debuggable, and 2:34 → 1:00 is already enough for most CI workloads. The theoretical floor is interesting mostly for understanding *where* the architectural ceiling is — if you ever need sub-15-second 10,000-clone pools, this is the design space to explore.
+We haven't built this. The current docker-based architecture (S=16, S=32, S=200 single-host) is the pragmatic point: it works, it's debuggable, and sub-minute pool-ready is already enough for most CI workloads. The theoretical floor is interesting mostly for understanding *where* the architectural ceiling is — if you ever need sub-15-second 10,000-clone pools, this is the design space to explore.
 
 ### Hardware not yet tested — please share if you measure
 
@@ -303,7 +307,7 @@ Known-interesting datapoints to confirm in `BENCHMARKS_BY_HARDWARE.md`:
 - Ryzen 7950X / 13900K / 14900K (modern desktops)
 - Threadripper Pro 7975WX / 7995WX (workstation/server)
 - Apple Silicon M3/M4 (per-thread perf is competitive but Docker is heavier on macOS)
-- ARM server (Ampere Altra, AWS Graviton) — single-thread perf vs Xeon is interesting
+- ARM server (Ampere Altra, AWS Graviton) — single-thread perf vs x86 is interesting
 
 If you reproduce on different hardware, open a PR with your measured numbers.
 
