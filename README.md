@@ -40,9 +40,7 @@ You want to run hundreds of integration tests against a real MariaDB schema **in
 
 **This repo: pre-bake a pool of pristine clones once; each test atomically claims a slot. Pool ready in 2.5 minutes. Test claim: <5ms.**
 
-## Why is our db cloning of hundreds of databases so bloody FAST and SCALABLE?
-
-Three things have to give before MariaDB lets you fork hundreds of pristine databases in seconds. None of them are visible from the docs — you discover them by hitting walls. Here's what each wall is, and how we knocked it down:
+## Why is cloning a MariaDB schema so goddamn slow?
 
 You'd think duplicating a 110 MB database would be sub-second:
 - `cp -r` 110 MB on tmpfs: ~0.3s
@@ -79,7 +77,7 @@ The cause is always the same: **InnoDB's data dictionary lives in `ibdata1`**. W
 
 Full breakdown: see [RESULTS.md](RESULTS.md).
 
-## What actually works (the architecture)
+## Why is our db cloning of hundreds of databases so bloody FAST and SCALABLE?
 
 The key insights that compound:
 
