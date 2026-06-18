@@ -199,17 +199,25 @@ The architectural rule of thumb: **per-clone wall ≈ single-clone bake time** w
 
 ### Pool-size scaling (110 MB schema)
 
-| Total clones | Config | **Haswell-EP** (measured/projected) | Modern desktop (Ryzen 7950X / 14900K) | Threadripper Pro 96-core |
+Two viable configs per pool size: **conservative** (low S, bake per shard does multiple clones) vs **high-S** (S = pool size, N=1 — sub-60s achievable but docker daemon serialization becomes the wall at very high S).
+
+| Total | Conservative config | Wall (Has / Desktop / TR) | High-S config (N=1) | Wall (Has / Desktop / TR) |
 |---|---|---|---|---|
-| **1** | S=1, N=1 | ~38s | ~25s | **~15s** |
-| **100** | S=16, N=7 (=112) | ~1:35 | ~50s | **~35s** |
-| **200** | S=16, N=13 (=208) | **2:34 (measured)** | ~1:30 | **~1:00** |
-| **1000** | S=32, N=32 (=1024) | ~3:40 | ~2:00 | **~1:20** |
-| **10000** | S=32, N=313 (=10016) | ~22 min | ~12 min | **~8 min** |
+| **1** | S=1, N=1 | 38s / 25s / **15s** | (same) | (same) |
+| **100** | S=16, N=7 | 1:35 / 50s / 35s | S=100, N=1 | 1:17 / 45s / **~35s** |
+| **200** | S=16, N=13 | **2:34 (measured) / 1:30 / 1:00** | S=200, N=1 | 2:02 / 1:05 / **~55s** |
+| **1000** | S=32, N=32 | 3:40 / 2:00 / 1:20 | S=1000, N=1 (single host) | docker-bottlenecked: ~7:30 / 3:30 / **2:00** |
+| **1000** | — | — | **Distributed: 4 hosts × S=250** | 1:00 / 35s / **~20s** |
+| **10000** | S=32, N=313 | 22 min / 12 min / 8 min | **Distributed: 10 hosts × S=1000** | 3 min / 1:30 / **~50s** |
 
-Fixed setup overhead (~25s) is amortized hard at N=1; bake dominates as pool grows; snapshot stays sub-linear (always ~3s — btrfs scales beautifully).
+**Key insights:**
 
-At Haswell we measured **docker daemon caps START_PARALLEL=8** (going to =16 was actually slower); on modern silicon the cap lifts to =16 or =32 because there's no CPU contention.
+- **Sub-60s for 200 clones** is achievable on Threadripper with S=200 N=1. **Sub-60s for 1000 clones** needs multi-host distribution.
+- **Single-host docker daemon caps START_PARALLEL ≈ 8 on Haswell, ≈ 32 on Threadripper.** Past that, parallel container starts contend for kernel cgroup/network setup. The 1000-clone single-host row shows this hard — 1000 starts even on TR takes ~90s by themselves.
+- **Distributed scaling** (multi-host) is the lever past S=200 if sub-minute matters: each host bakes its slice independently from a shared staged-backup dir (NFS, S3, rsync). Coordination overhead is small because the per-host work is identical and parallel.
+- Fixed setup overhead (~25s on Haswell, ~10s on TR) is amortized hard at N=1; bake dominates as pool grows; **snapshot stays sub-linear** (~3s on Haswell, ~1s on TR — btrfs scales beautifully).
+
+At Haswell we measured **docker daemon caps START_PARALLEL=8** (going to =16 was actually slower); on modern silicon the cap lifts to =16 or =32 because there's no CPU contention. Beyond S=32 on a single host, the docker overhead dominates and the architectural-floor path (native mariadbd processes) becomes attractive — see [Theoretical floor](#theoretical-floor-unlimited-shards-short-lived-containers--native-processes).
 
 ### DB-size scaling (200 clones target, S=16 N=13, Haswell-EP)
 
