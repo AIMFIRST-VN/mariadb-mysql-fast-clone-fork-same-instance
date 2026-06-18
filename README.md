@@ -3,7 +3,7 @@
 > **TL;DR: 200 pristine MariaDB clones in 2 minutes 34 seconds. 82× faster than `mariadb-dump | mariadb`.**
 > Forks happen **inside a running mariadbd** — no `mariabackup`, no ZFS, no replication, no external tooling.
 >
-> 📖 **Read the full writeup:** [Why cloning a MariaDB schema is so goddamn slow (and how to make it 82× faster) — AIMFIRST VN blog](https://aimfirstvn.com/blog/why-cloning-mariadb-is-slow/)
+> 📖 **Full writeup** (coming soon on the [AIMFIRST VN blog](https://aimfirstvn.com/)) — meanwhile see this README + [scripts/](scripts/) for the full story.
 > 🏢 By [AIMFIRST VN](https://aimfirstvn.com/) — AI consultancy & infrastructure deep work.
 
 [![CI status](https://github.com/AIMFIRST-VN/mariadb-mysql-fast-clone-fork-same-instance/actions/workflows/ci.yml/badge.svg)](https://github.com/AIMFIRST-VN/mariadb-mysql-fast-clone-fork-same-instance/actions/workflows/ci.yml)
