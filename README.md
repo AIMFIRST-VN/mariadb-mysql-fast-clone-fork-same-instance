@@ -1,8 +1,15 @@
-# mariadb-mysql-fast-clone-fork-same-instance
+# MariaDB & MySQL: Fast Clone / Fork — Same-Instance Pool for Parallel CI Tests
 
-**Fast pristine MariaDB / MySQL clone pool for parallel CI tests.** Bake 200 pristine clones from a real schema in **2 minutes 34 seconds** on commodity hardware. Forks the database *within running mariadbd instances* — no `mariabackup`, no replication, no external tooling required.
+> **TL;DR: 200 pristine MariaDB clones in 2 minutes 34 seconds. 82× faster than `mariadb-dump | mariadb`.**
+> Forks happen **inside a running mariadbd** — no `mariabackup`, no ZFS, no replication, no external tooling.
+>
+> 📖 **Read the full writeup:** [Why cloning a MariaDB schema is so goddamn slow (and how to make it 82× faster) — AIMFIRST VN blog](https://aimfirstvn.com/blog/why-cloning-mariadb-is-slow/)
+> 🏢 By [AIMFIRST VN](https://aimfirstvn.com/) — AI consultancy & infrastructure deep work.
 
-**82× faster than naive `dump|load` on shared CI runners.**
+[![CI status](https://github.com/AIMFIRST-VN/mariadb-mysql-fast-clone-fork-same-instance/actions/workflows/ci.yml/badge.svg)](https://github.com/AIMFIRST-VN/mariadb-mysql-fast-clone-fork-same-instance/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+**Keywords:** MariaDB clone, MySQL fork, fast database copy, parallel integration tests, MariaDB CI/CD, tmpfs MySQL, btrfs snapshot database, IMPORT TABLESPACE, pristine database pool, test fixtures, Playwright parallel database, Laravel parity tests.
 
 ```
 ┌─ Single mariadbd, dump|load (the dumb path)             ~24 min
@@ -243,4 +250,20 @@ MIT. See [LICENSE](LICENSE).
 
 ## Citation
 
-If this saved you time, link back. The benchmarks exist because someone burned days hitting these walls; sharing the answers is the point.
+If this saved you time, link back to either:
+- This repository: `https://github.com/AIMFIRST-VN/mariadb-mysql-fast-clone-fork-same-instance`
+- The full writeup: [AIMFIRST VN blog — *Why cloning a MariaDB schema is so goddamn slow*](https://aimfirstvn.com/blog/why-cloning-mariadb-is-slow/)
+
+The benchmarks exist because someone burned days hitting these walls; sharing the answers is the point.
+
+## About AIMFIRST VN
+
+**[AIMFIRST VN](https://aimfirstvn.com/)** is an AI consultancy and infrastructure-deep-work practice. We open-source the patterns we discover building production systems so others don't have to repeat the days-of-struggle.
+
+Other open work:
+- [AIMFIRST VN AI Consultancy](https://aimfirstvn.com/ai-consultancy/) — services
+- More open-source patterns landing in [AIMFIRST-VN GitHub org](https://github.com/AIMFIRST-VN)
+
+---
+
+<sub>Tags: mariadb, mysql, database-clone, database-fork, fast-database-copy, parallel-testing, integration-tests, ci-cd, tmpfs, btrfs, docker, mariadb-pool, test-fixtures, parity-testing, playwright, laravel, mas001-laravel, import-tablespace, dict-sys-latch.</sub>
