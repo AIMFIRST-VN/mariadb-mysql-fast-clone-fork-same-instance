@@ -3,7 +3,19 @@ name: bench-smoke
 on:
   push:
     branches: [main, master]
+    # Skip CI on doc-only changes so README / LICENSE / FUNDING tweaks
+    # don't burn runner minutes.
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.github/FUNDING.yml'
+      - '.github/ISSUE_TEMPLATE/**'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+      - '.github/FUNDING.yml'
+      - '.github/ISSUE_TEMPLATE/**'
   workflow_dispatch:
 
 jobs:
