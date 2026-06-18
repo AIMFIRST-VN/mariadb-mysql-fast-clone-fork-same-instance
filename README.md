@@ -12,12 +12,11 @@ All three numbers use the **same architecture** — only hardware + shard count 
 
 **A staggering ~200-250× faster than `mariadb-dump | mariadb`** — the speedup compounds: ~84× from architecture (IMPORT TABLESPACE + sharded mariadbds + btrfs snapshot) × ~3× from modern silicon (vs typical CI runner CPUs). Same hardware. Same MariaDB. Just a different code path.
 
-> 📖 **Full writeup** (coming soon on the [AIMFIRST VN blog](https://aimfirstvn.com/)) — meanwhile see the [Scaling table](#scaling-pool-size--db-size--hardware) below + [scripts/](scripts/) for the full story.
+> 📖 **Full writeup:** [Why cloning a MariaDB schema is so goddamn slow (and how to make it 200× faster)](https://aimfirstvn.com/blog/why-cloning-mariadb-is-slow/) on the AIMFIRST VN blog. See also the [Scaling table](#scaling-pool-size--db-size--hardware) below + [scripts/](scripts/) for the full benchmark numbers.
 > 🏢 By [AIMFIRST VN](https://aimfirstvn.com/) — AI consultancy & infrastructure deep work.
 
 [![CI status](https://github.com/AIMFIRST-VN/mariadb-mysql-fast-clone-fork-same-instance/actions/workflows/ci.yml/badge.svg)](https://github.com/AIMFIRST-VN/mariadb-mysql-fast-clone-fork-same-instance/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy_Me_A_Coffee-FFDD00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/aimfirstvn)
 
 **Keywords:** MariaDB clone, MySQL fork, fast database copy, parallel integration tests, MariaDB CI/CD, tmpfs MySQL, btrfs snapshot database, IMPORT TABLESPACE, pristine database pool, test fixtures, Playwright parallel database, Laravel parity tests.
 
@@ -460,11 +459,7 @@ The benchmarks exist because someone burned days hitting these walls; sharing th
 
 ## Support this work
 
-If this repo saved you hours (or days) of struggle, consider supporting future patterns we open-source:
-
-[![Buy Me A Coffee](https://img.shields.io/badge/Buy_Me_A_Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/aimfirstvn)
-
-Or [hire us at AIMFIRST VN](https://aimfirstvn.com/ai-consultancy/) for the same kind of deep infrastructure work on your own stack.
+If this repo saved you hours (or days) of struggle and you'd like the same kind of deep infrastructure work on your own stack, [hire us at AIMFIRST VN](https://aimfirstvn.com/ai-consultancy/).
 
 ## About AIMFIRST VN
 
